@@ -1,6 +1,5 @@
 import requests
 import zipfile
-import tarfile
 import io
 import os
 import shutil
@@ -13,11 +12,7 @@ from src.config.config import DownloadConfig
 config = DownloadConfig()
 
 class ESC50Downloader:
-    def __init__(
-        self,
-        repo_url: str = config.repo_url,
-        repo_dst_dir: str = config.repo_dst_dir
-    ):
+    def __init__(self, repo_url: str = config.repo_url, repo_dst_dir: str = config.repo_dst_dir) -> None:
         self.repo_url = repo_url
         self.repo_dst_dir = Path(repo_dst_dir)
         self.audio_dst_dir = config.audio_dst_dir
@@ -25,7 +20,7 @@ class ESC50Downloader:
         self.extracted_dir = config.extracted_dir 
         self.audio_src_dir = config.audio_src_dir 
 
-    def download_and_extract(self):
+    def download_and_extract(self) -> None:
         os.makedirs(self.repo_dst_dir, exist_ok=True)
         print(f"Downloading from {self.repo_url}")
 
@@ -46,7 +41,7 @@ class ESC50Downloader:
             z.extractall(self.repo_dst_dir)
         print("Done extracting.")
 
-    def clean_files(self):
+    def clean_files(self) -> None:
         for f in self.paths_to_delete:
             path = os.path.join(self.extracted_dir, f)
             if os.path.isfile(path):
@@ -56,7 +51,7 @@ class ESC50Downloader:
                 shutil.rmtree(path)
                 print(f"Deleted directory: {path}")
 
-    def move_audio_files(self):
+    def move_audio_files(self) -> None:
         os.makedirs(self.audio_dst_dir, exist_ok=True)
         print(f"Moving audio files from {self.audio_src_dir} to {self.audio_dst_dir}")
         
@@ -67,11 +62,7 @@ class ESC50Downloader:
                 shutil.move(src_file, dst_file)
         print(f"Moved all audio files to {self.audio_dst_dir}")
 
-    def download_clean(self):
+    def download_clean(self) -> None:
         self.download_and_extract()
         self.clean_files()
         self.move_audio_files()
-
-if __name__ == "__main__":
-    downloader = ESC50Downloader()
-    downloader.download_clean()

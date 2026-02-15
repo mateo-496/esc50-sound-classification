@@ -1,193 +1,74 @@
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import argparse
-import os
-import sys
 
 from src.models.cnn import CNN
-from src.data.augment import data_treatment_testing
-from src.config.config import sample_rate, parameters, cnn_input_length, esc50_labels
+from src.data.augment import AudioAugment
+from src.config.config import ProcessingConfig, DatasetConfig, TrainConfig
 
-def predict_with_overlapping_patches(model, spectrogram, patch_length=cnn_input_length, hop=1, batch_size=100, device="cuda"):
-    model.eval()
+config = ProcessingConfig()
 
-    n_frames, n_mels = spectrogram.shape
+class AudioPredictor:
+    def __init__(
+        self, 
+        model_path: str, 
+        config: ProcessingConfig = config, 
+        device: str = 'cuda'
+    ) -> None:
+        self.config = config
+        self.audio_dataset = AudioAugment()
+        self.dataset_config = DatasetConfig()
+        self.train_config = TrainConfig()
+        self.device = device
+        self.model = self._load_model(model_path)
 
-    if n_frames < patch_length:
-        pad = patch_length - n_frames
-        spectrogram = np.pad(spectrogram, ((0, pad), (0, 0)), mode='constant')
-        n_frames = patch_length
+    def _load_model(self, model_path: str) -> CNN:
+        model = CNN(n_classes=len(self.dataset_config.esc50_labels))
+        checkpoint = torch.load(model_path, map_location=self.device)
+        state_dict = checkpoint.get("model_state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
+        model.load_state_dict(state_dict)
+        if isinstance(checkpoint, dict) and "best_val_acc" in checkpoint:
+            print(f"Model validation accuracy: {checkpoint['best_val_acc']:.4f}")
+        model.to(self.device).eval()
+        print("Model loaded successfully!\n")
+        return model
 
-    patches = []
-    for start in range(0, n_frames - patch_length + 1, hop):
-        patch = spectrogram[start:start + patch_length]
-        patch = patch[np.newaxis, np.newaxis, :, :]
-        patches.append(patch)
+    def _extract_patches(self, spectrogram: np.ndarray, hop: int) -> torch.Tensor:
+        n_frames, _ = spectrogram.shape
+        if n_frames < self.dataset_config.cnn_input_length:
+            spectrogram = np.pad(spectrogram, ((0, self.dataset_config.cnn_input_length - n_frames), (0, 0)), mode="constant")
+            n_frames = self.dataset_config.cnn_input_length
 
-    patches = np.concatenate(patches, axis=0)
-    patches = torch.tensor(patches, dtype=torch.float32).to(device)
-
-    all_outputs = []
-    with torch.no_grad():
-        for i in range(0, len(patches), batch_size):
-            batch = patches[i:i + batch_size]
-            outputs = model(batch)
-            all_outputs.append(outputs)
+        patches = np.concatenate([
+            spectrogram[s:s + self.dataset_config.cnn_input_length][np.newaxis, np.newaxis]
+            for s in range(0, n_frames - self.dataset_config.cnn_input_length + 1, hop)
+        ], axis=0)
+        return torch.tensor(patches, dtype=torch.float32).to(self.device)
     
-    all_outputs = torch.cat(all_outputs, dim=0)
+    def _run_inference(self, patches: torch.Tensor, batch_size: int) -> torch.Tensor:
+        all_outputs = []
+        with torch.no_grad():
+            for i in range(0, len(patches), batch_size):
+                all_outputs.append(self.model(patches[i:i + batch_size]))
+        return torch.cat(all_outputs, dim=0).mean(dim=0)
 
-    mean_activations = all_outputs.mean(dim=0)
-    predicted_class = mean_activations.argmax().item()
+    def predict_class(self, spectrogram: np.ndarray, hop: int = 1) -> int:
+        patches = self._extract_patches(spectrogram, hop)
+        mean_activations = self._run_inference(patches, self.train_config.batch_size)
+        return mean_activations.argmax().item()
 
-    return predicted_class
+    def predict_top_k(self, spectrogram: np.ndarray, hop: int = 1, top_k: int = 5):
+        patches = self._extract_patches(spectrogram, hop)
+        mean_logits = self._run_inference(patches, self.train_config.batch_size)
+        probs = F.softmax(mean_logits, dim=0)
+        top_probs, top_indices = torch.topk(probs, min(top_k, len(self.dataset_config.esc50_labels)))       
+        return top_probs.cpu().numpy(), top_indices.cpu().numpy()
 
-def predict_top_k(model, spectrogram, patch_length=cnn_input_length, hop=1, batch_size=100, device="cpu", top_k=5):  
-    model.eval()
+    def predict_file(self, audio_file: str, top_k: int = 5):
+        spectrogram = np.array(self.audio_dataset._data_treatment_testing(audio_file)).squeeze()
+        predicted_class = self.predict_class(spectrogram)
+        top_probs, top_indices = self.predict_top_k(spectrogram, top_k=top_k)
+        return predicted_class, top_probs, top_indices
 
-    n_frames, n_mels = spectrogram.shape
-
-    if n_frames < patch_length:
-        pad = patch_length - n_frames
-        spectrogram = np.pad(spectrogram, ((0, pad), (0, 0)), mode='constant')
-        n_frames = patch_length
-
-    patches = []
-    for start in range(0, n_frames - patch_length + 1, hop):
-        patch = spectrogram[start:start + patch_length]
-        patch = patch[np.newaxis, np.newaxis, :, :]
-        patches.append(patch)
-
-    patches = np.concatenate(patches, axis=0)
-    patches = torch.tensor(patches, dtype=torch.float32).to(device)
-
-    all_outputs = []
-    with torch.no_grad():
-        for i in range(0, len(patches), batch_size):
-            batch = patches[i:i + batch_size]
-            outputs = model(batch)
-            all_outputs.append(outputs)
-    
-    all_outputs = torch.cat(all_outputs, dim=0)
-    mean_logits = all_outputs.mean(dim=0)
-    probabilities = torch.nn.functional.softmax(mean_logits, dim=0)
-
-    top_probs, top_indices = torch.topk(probabilities, min(top_k, 50))
-    top_probs = top_probs.cpu().numpy()
-    top_indices = top_indices.cpu().numpy()
-
-    return top_probs, top_indices
-
-def predict_file(model, audio_file, device="cpu", top_k=5):
-    parameters = {
-        "n_bands"  : 128,
-        "n_mels" : 128,
-        "frame_size" : 1024,
-        "hop_size": 1024,
-        "sample_rate": sample_rate,
-        "fft_size": 8192,
-    }
-    spectrogram = data_treatment_testing(audio_file, **parameters)
-
-    spectrogram = np.array(spectrogram)
-
-    spectrogram = spectrogram.squeeze()
-
-    predicted_class = predict_with_overlapping_patches(
-        model, spectrogram, patch_length=128, hop=1, batch_size=100, device=device
-    )
-    top_probs, top_indices = predict_top_k(
-        model, spectrogram, patch_length=128, hop=1, batch_size=100, device=device, top_k=top_k
-    )
-
-    return predicted_class, top_probs, top_indices
-
-def load_model(model_path, device='cpu'):
-    print(f"Loading model from {model_path}...")
-    
-    model = CNN(n_classes=50)
-    checkpoint = torch.load(model_path, map_location=device)
-    
-    if isinstance(checkpoint, dict):
-        if 'model_state_dict' in checkpoint:
-            model.load_state_dict(checkpoint['model_state_dict'])
-            if 'best_val_acc' in checkpoint:
-                print(f"Model validation accuracy: {checkpoint['best_val_acc']:.4f}")
-        else:
-            model.load_state_dict(checkpoint)
-    else:
-        model.load_state_dict(checkpoint)
-    
-    model.to(device)
-    model.eval()
-    print("Model loaded successfully!\n")
-    return model
-
-
-
-def main():
-    parser = argparse.ArgumentParser(
-        description='Predict environmental sound class using trained ESC-50 model'
-    )
-    parser.add_argument(
-        'audio_file',
-        type=str,
-        help='Path to .wav file to classify'
-    )
-    parser.add_argument(
-        '--model',
-        type=str,
-        default='best_model.pt',
-        help='Path to trained model checkpoint (default: best_model.pt)'
-    )
-    parser.add_argument(
-        '--top-k',
-        type=int,
-        default=5,
-        help='Number of top predictions to show (default: 5)'
-    )
-    parser.add_argument(
-        '--device',
-        type=str,
-        default='cuda' if torch.cuda.is_available() else 'cpu',
-        help='Device to use (default: auto-detect)'
-    )
-    
-    args = parser.parse_args()
-    
-    if not os.path.exists(args.audio_file):
-        print(f"Error: Audio file not found: {args.audio_file}")
-        sys.exit(1)
-    
-    if not os.path.exists(args.model):
-        print(f"Error: Model file not found: {args.model}")
-        sys.exit(1)
-    
-    try:
-        model = load_model(args.model, device=args.device)
-    except Exception as e:
-        print(f"Error loading model: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
-    
-    try:
-        predicted_class, top_probs, top_indices = predict_file(
-            model, args.audio_file, device=args.device, top_k=args.top_k
-        )
-                
-        print("\n" + "=" * 60)
-        print(f"Top {args.top_k} Predictions:")
-        print("=" * 60)
-        
-        for i, (prob, idx) in enumerate(zip(top_probs, top_indices)):
-            class_name = esc50_labels[idx]
-            marker = "★" if idx == predicted_class else " "
-            print(f"{marker} {i+1}. {class_name:20s} - {prob*100:6.2f}%")
-        
-      
-    except Exception as e:
-        print(f"\nError during prediction: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)

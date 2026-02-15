@@ -2,18 +2,30 @@ import os
 import numpy as np
 import torch
 import json
+import sys
 import matplotlib.pyplot as plt
 import argparse
 from sklearn.model_selection import train_test_split
 
-from src.data.download import download_clean
-from src.data.augment import create_augmented_datasets, create_log_mel, data_treatment_testing
+from src.data.download import ESC50Downloader
+from src.data.augment import AudioAugment
 from src.models.cnn import CNN
-from src.models.traincnn import train_k_fold_cnn, train_cnn
-from src.models.predict import predict_with_overlapping_patches, predict_top_k, predict_file, load_model
-from src.config.config import sample_rate, cnn_input_length, esc50_labels
+from src.models.predict import AudioPredictor
+from src.models.traincnn import CNNTrainer
+from src.config.config import ProcessingConfig, DatasetConfig, DownloadConfig, TrainConfig
 
-def main():
+def _load_or_preprocess(args) -> tuple[np.ndarray, np.ndarray]:
+    X_path = args.X_path or "data/preprocessed/X.npy"
+    y_path = args.y_path or "data/preprocessed/y.npy"
+    if os.path.exists(X_path) and os.path.exists(y_path):
+        print("Loading existing processed data...")
+        return np.load(X_path, allow_pickle=True), np.load(y_path)
+    print("Processing audio data...")
+    augmenter = AudioAugment()
+    augmenter.run(augment=True, preprocess=True)
+    return np.load(X_path, allow_pickle=True), np.load(y_path)
+
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="ESC50 Audio Classification",
         formatter_class=argparse.RawDescriptionHelpFormatter
@@ -64,8 +76,8 @@ def main():
 
     resume_parser = subparsers.add_parser('resume', help='Resume training from checkpoint')
     resume_parser.add_argument('--resume-from', type=str, required=True, help='Path to checkpoint file')
-    resume_parser.add_argument('--X-path', type=str, help='Path to preprocessed X.npy')
-    resume_parser.add_argument('--y-path', type=str, help='Path to preprocessed y.npy')
+    resume_parser.add_argument('--X-path', type=str, default="data/preprocessed/X.npy")
+    resume_parser.add_argument('--y-path', type=str, default="data/preprocessed/y.npy")
     resume_parser.add_argument('--epochs', type=int, default=100, help='Number of epochs (default: 100)')
     resume_parser.add_argument('--batch-size', type=int, default=100, help='Batch size (default: 100)')
     resume_parser.add_argument('--lr', type=float, default=0.01, help='Learning rate (default: 0.01)')
@@ -76,7 +88,7 @@ def main():
 
     predict_parser = subparsers.add_parser('predict', help='Predict audio file class')
     predict_parser.add_argument('audio_file', type=str, help='Path to .wav file to classify')
-    predict_parser.add_argument('--model', type=str, default='best_model.pt', help='Path to model checkpoint (default: best_model.pt)')
+    predict_parser.add_argument('--model', type=str, default='final_model.pt', help='Path to model checkpoint (default: best_model.pt)')
     predict_parser.add_argument('--top-k', type=int, default=5, help='Number of top predictions (default: 5)')
     predict_parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Device (default: auto)')
     predict_parser.set_defaults(func=cmd_predict)
@@ -84,194 +96,78 @@ def main():
     args = parser.parse_args()
     args.func(args)
 
-def cmd_download(args):
-    print("Download ESC50 audio data...")
+def cmd_download(args) -> None:
+    print("Downloading ESC50 audio data...")
 
-    download_clean()
+    downloader = ESC50Downloader()
 
-    print("Data downloaded and cleaned.")
+    downloader.download_clean()
 
-def cmd_augment(args):
+    print("Downloaded and cleaned data.")
+
+def cmd_augment(args) -> None:
     print("Augmenting audio data...")
-    create_augmented_datasets(args.input_dir, args.output_dir)
 
-    print(f"Saved augmented data to {args.output_dir}")
+    augmentater = AudioAugment()
 
-def cmd_preprocess(args):
+    augmentater.run(augment=True, preprocess=False)
+
+    print(f"Augmented data and saved to {args.output_dir}")
+
+def cmd_preprocess(args) -> None:
     print("Processing audio data...")
-       
-    print("Creating log-mel spectrograms...")
-    X, y = create_log_mel(args.input_dir, args.output_dir)
     
-    print(f"Dataset size: {len(X)} samples, {len(np.unique(y))} classes")
-    print(f"Saved to {args.output_dir}")
+    augmentater = AudioAugment()
 
-def cmd_train(args): 
-    device = "cuda" if torch.cuda.is_available() else "cpu" 
-    print(f"Using device: {device}") 
+    augmentater.run(augment=False, preprocess=True)
 
-    X_path = args.X_path or "data/preprocessed/X.npy" 
-    y_path = args.y_path or "data/preprocessed/y.npy" 
-    
-    if os.path.exists(X_path) and os.path.exists(y_path): 
-        print("Loading existing processed data...") 
-        X = np.load(X_path, allow_pickle=True) 
-        y = np.load(y_path) 
-    else: 
-        print("Processing audio data...") 
-        audio_training_path = args.audio_dir or "data/audio/0" 
-        directories = os.listdir(audio_training_path) 
+    print(f"Preprocessed data and saved to {args.output_dir}")
 
-        if len(directories) == 1 and args.augment: 
-            print("Creating augmented datasets...") 
-            create_augmented_datasets(audio_training_path, "data/audio") 
-
-        print("Creating log-mel spectrograms...") 
-        X, y = create_log_mel(args.audio_dir or "data/audio", args.output_dir or "data/preprocessed") 
-            
-    print(f"Dataset size: {len(X)} samples, {len(np.unique(y))} classes") 
-        
-    X_train, X_val, y_train, y_val = train_test_split( X, y, test_size=0.2, random_state=42, stratify=y ) 
-    print(f"Train: {len(X_train)}, Val: {len(X_val)}") 
-    model = CNN(n_classes=len(np.unique(y))) 
-    best_val_acc = train_cnn( 
-        model, 
-        X_train, y_train, 
-        X_val, y_val, 
-        epochs=args.epochs, 
-        batch_size=args.batch_size, 
-        lr=args.lr, 
-        fold_num=0,
-        device=device, 
-        use_all_patches=True, 
-        samples_per_epoch_fraction=args.sample_fraction, 
-        checkpoint_dir=args.checkpoint_dir, 
-        save_every_n_epoch=args.save_every, 
-        resume_from=None ) 
-    
-    print(f"\nTraining complete! Best validation accuracy: {best_val_acc:.4f}") 
-    return best_val_acc
-
-def cmd_train_cv(args):
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Using device: {device}")
-    
-    X_path = args.X_path or "data/preprocessed/X.npy"
-    y_path = args.y_path or "data/preprocessed/y.npy"
-    
-    if os.path.exists(X_path) and os.path.exists(y_path):
-        print("Loading existing processed data...")
-        X = np.load(X_path, allow_pickle=True)
-        y = np.load(y_path)
-    else:
-        print("Processing audio data...")
-        audio_training_path = args.audio_dir or "data/audio/0"
-        directories = os.listdir(audio_training_path)
-        
-        if len(directories) == 1 and args.augment:
-            print("Creating augmented datasets...")
-            create_augmented_datasets(audio_training_path, "data/audio")
-        
-        print("Creating log-mel spectrograms...")
-        X, y = create_log_mel(args.audio_dir or "data/audio", args.output_dir or "data/preprocessed")
-    
-    print(f"Dataset size: {len(X)} samples, {len(np.unique(y))} classes")
-    
-    X_train, X_val, y_train, y_val = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y
-    )
-    print(f"Train: {len(X_train)}, Val: {len(X_val)}")
-    
-    model = CNN(n_classes=len(np.unique(y)))
-    
-    fold_accs, mean_acc = train_k_fold_cnn(
-        model_class=lambda: CNN(),
-        X=X,
-        y=y,
+def cmd_train(args) -> None: 
+    X, y = _load_or_preprocess(args)
+    trainer = CNNTrainer(TrainConfig(
         epochs=args.epochs,
         batch_size=args.batch_size,
         lr=args.lr,
-        k_fold=args.k_fold,
-        device=device,
-        use_all_patches=True,
-        samples_per_epoch_fraction=args.sample_fraction,
-        checkpoint_dir=args.checkpoint_dir,
-        save_every_n_epoch=args.save_every
-    )
-    
-    print(f"\nTraining complete! Mean validation accuracy: {mean_acc:.4f}")
-    return mean_acc
-
-def cmd_resume(args):
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Using device: {device}")
-    
-    print("Loading processed data...")
-    X = np.load(args.X_path or "data/preprocessed/X.npy", allow_pickle=True)
-    y = np.load(args.y_path or "data/preprocessed/y.npy")
-    
-    X_train, X_val, y_train, y_val = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y
-    )
-    print(f"Train: {len(X_train)}, Val: {len(X_val)}")
-    
-    n_classes = len(np.unique(y))
-    model = CNN(n_classes=n_classes)
-    
-    print(f"Resuming from: {args.resume_from}")
-    
-    best_val_acc = train_cnn(
-        model,
-        X_train, y_train,
-        X_val, y_val,
-        epochs=args.epochs,
-        batch_size=args.batch_size,
-        lr=args.lr,
-        device=device,
-        use_all_patches=True,
         samples_per_epoch_fraction=args.sample_fraction,
         checkpoint_dir=args.checkpoint_dir,
         save_every_n_epoch=args.save_every,
-        resume_from=args.resume_from
-    )
-    
+    ))
+    X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+    best_val_acc = trainer.train_cnn(CNN(n_classes=len(np.unique(y))), X_train, y_train, X_val, y_val, fold_num=0)
     print(f"\nTraining complete! Best validation accuracy: {best_val_acc:.4f}")
-    return best_val_acc
 
-def cmd_predict(args):
+def cmd_train_cv(args) -> None:
+    X, y = _load_or_preprocess(args)
+    trainer = CNNTrainer(TrainConfig(
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        lr=args.lr,
+        samples_per_epoch_fraction=args.sample_fraction,
+        checkpoint_dir=args.checkpoint_dir,
+        save_every_n_epoch=args.save_every,
+    ))
+    fold_accs, mean_acc = trainer.train_k_fold_cnn(CNN, X, y)
+    print(f"\nTraining complete! Mean validation accuracy: {mean_acc:.4f}")
+
+def cmd_predict(args) -> None:
     if not os.path.exists(args.audio_file):
-        print(f"Error: Audio file not found: {args.audio_file}")
-        sys.exit(1)
-    
+        print(f"Error: Audio file not found: {args.audio_file}"); sys.exit(1)
     if not os.path.exists(args.model):
-        print(f"Error: Model file not found: {args.model}")
-        sys.exit(1)
-    
+        print(f"Error: Model file not found: {args.model}"); sys.exit(1)
     try:
-        model = load_model(args.model, device=args.device)
-    except Exception as e:
-        print(f"Error loading model: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
-    
-    try:
-        predicted_class, top_probs, top_indices = predict_file(
-            model, args.audio_file, device=args.device, top_k=args.top_k
-        )
-        
+        predictor = AudioPredictor(model_path=args.model, device=args.device)
+        predicted_class, top_probs, top_indices = predictor.predict_file(args.audio_file, top_k=args.top_k)
+        labels = DatasetConfig().esc50_labels
         print("\n" + "=" * 60)
         print(f"Top {args.top_k} Predictions:")
         print("=" * 60)
-        
         for i, (prob, idx) in enumerate(zip(top_probs, top_indices)):
-            class_name = esc50_labels[idx]
             marker = "★" if idx == predicted_class else " "
-            print(f"{marker} {i+1}. {class_name:20s} - {prob*100:6.2f}%")
-        
+            print(f"{marker} {i+1}. {labels[idx]:20s} - {prob*100:6.2f}%")
     except Exception as e:
-        print(f"\nError during prediction: {e}")
         import traceback
+        print(f"\nError during prediction: {e}")
         traceback.print_exc()
         sys.exit(1)
 
