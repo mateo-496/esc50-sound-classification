@@ -2,7 +2,7 @@
 title: ESC50 Audio Classifier
 emoji: 🔊
 colorFrom: gray
-colorTo: black
+colorTo: purple
 sdk: docker
 pinned: false
 ---
