@@ -31,4 +31,3 @@ test/
 
 .dockerignore
 Dockerfile
-requirements.txt
