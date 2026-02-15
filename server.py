@@ -28,7 +28,7 @@ app.add_middleware(
 )
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
-predictor = AudioPredictor("final_model_deployed.pt", device=device)
+predictor = AudioPredictor("final_model.pt", device=device)
 
 
 @app.get("/")
