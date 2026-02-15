@@ -1,3 +1,12 @@
+---
+title: ESC50 Audio Classifier
+emoji: 🔊
+colorFrom: gray
+colorTo: black
+sdk: docker
+pinned: false
+---
+
 # Environmental Sound Classification (ESC50) with Deep CNNs
 
 A PyTorch reimplementation of the deep convolutional neural network approach from [Salamon & Bello (2017)](https://arxiv.org/pdf/1608.04363) for environmental sound classification, extended to handle 50 classes instead of the original 10.
