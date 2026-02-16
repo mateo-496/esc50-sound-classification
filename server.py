@@ -64,9 +64,6 @@ async def predict_top_k(file: UploadFile = File(...), k: int = 5):
         print("[2] Running inference...")
         predicted_class, top_probs, top_indices = predictor.predict_file(wav_path, top_k=k)
         print(f"[3] Done: {predicted_class} = {dataset_cfg.esc50_labels[predicted_class]}")
-        AudioSegment.from_file(tmp_path).export(wav_path, format="wav")
-
-        predicted_class, top_probs, top_indices = predictor.predict_file(wav_path, top_k=k)
 
         return {
             "predicted_class": dataset_cfg.esc50_labels[predicted_class],

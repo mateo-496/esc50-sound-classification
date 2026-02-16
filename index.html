@@ -296,6 +296,34 @@
             color: #555;
             text-align: center;
         }
+    
+        .k-selector {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 15px;
+            margin-top: 20px;
+            color: #667eea;
+            font-weight: 600;
+        }
+
+        .k-selector input[type="range"] {
+            appearance: none;
+            height: 6px;
+            border-radius: 3px;
+            background: #e0e4ff;
+            outline: none;
+        }
+
+        .k-selector input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            cursor: pointer;
+            box-shadow: 0 2px 8px rgba(102, 126, 234, 0.4);
+        }
     </style>
 </head>
 <body>
@@ -309,7 +337,10 @@
             <input type="file" id="fileInput" accept="audio/*">
             <div class="file-name" id="fileName"></div>
         </div>
-
+        <div class="k-selector">
+            <label for="kInput">Number of predictions: <span id="kValue">5</span> </label>
+            <input type="range" id="kInput" min="1" max="10" value="5">
+        </div>
         <button class="button" id="classifyBtn" disabled>Classify Audio</button>
 
         <div class="loading" id="loading">
@@ -326,7 +357,7 @@
             </div>
 
             <div class="top-predictions">
-                <h3>Top 5 Predictions</h3>
+                <h3></h3>
                 <div id="topPredictions"></div>
             </div>
         </div>
@@ -393,6 +424,11 @@
             hideError();
         }
 
+        const kInput = document.getElementById('kInput');
+        kInput.addEventListener('input', () => {
+            document.getElementById('kValue').textContent = kInput.value;
+        });
+
         // Classify button
         classifyBtn.addEventListener('click', async () => {
             if (!selectedFile) return;
@@ -406,7 +442,7 @@
                 const formData = new FormData();
                 formData.append('file', selectedFile);
 
-                const response = await fetch(`${API_URL}/predict-top-k?k=5`, {
+                const response = await fetch(`${API_URL}/predict-top-k?k=${kInput.value}`, {
                     method: 'POST',
                     body: formData
                 });
@@ -427,6 +463,7 @@
         });
 
         function displayResults(data) {
+            document.querySelector('.top-predictions h3').textContent = `Top ${kInput.value} Predictions`;
             // Main prediction
             document.getElementById('predictedClass').textContent = 
                 data.predicted_class.replace(/_/g, ' ').toUpperCase();
