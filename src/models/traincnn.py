@@ -26,7 +26,7 @@ class CNNTrainer:
         fold_num: int,
     ) -> float:
         device = self.config.device
-        os.makedirs(self.config.checkpoint_dir, exist_ok=True)
+        os.makedirs(self.config.checkpoint_cnn_dir, exist_ok=True)
 
         model.to(device)
         
@@ -147,19 +147,19 @@ class CNNTrainer:
                     }
                 }
                 checkpoint_path = os.path.join(
-                    self.config.checkpoint_dir,
+                    self.config.checkpoint_dir_cnn,
                     f"checkpoint_epoch_{epoch+1}.pt"
                 )
                 torch.save(checkpoint, checkpoint_path)
                 
                 if is_best:
-                    best_path = os.path.join(self.config.checkpoint_dir, "best_model.pt")
+                    best_path = os.path.join(self.config.checkpoint_dir_cnn, "best_model.pt")
                     torch.save(checkpoint, best_path)
 
-                latest_path = os.path.join(self.config.checkpoint_dir, "latest_checkpoint.pt")
+                latest_path = os.path.join(self.config.checkpoint_dir_cnn, "latest_checkpoint.pt")
                 torch.save(checkpoint, latest_path)
                 
-                history_path = os.path.join(self.config.checkpoint_dir, "training_history.json")
+                history_path = os.path.join(self.config.checkpoint_dir_cnn, "training_history.json")
                 with open(history_path, 'w') as f:
                     json.dump(training_history, f, indent=2)
 
@@ -178,57 +178,6 @@ class CNNTrainer:
         print(f"\nTraining complete! Final model saved to {final_model_path}")
 
         return best_val_acc
-
-    def train_k_fold_cnn(
-        self,
-        model_class: type,
-        X: Sequence[np.ndarray],
-        y: Sequence[int],
-    ) -> tuple[list[float], float]:
-
-        X_arr = np.array(X)
-        y_arr = np.array(y)
-        n_samples = len(y_arr)
-        indices = np.arange(n_samples)
-        np.random.shuffle(indices)
-
-        fold_sizes = (n_samples // 5) * np.ones(5, dtype=int)
-        fold_sizes[:n_samples % 5] += 1
-        current = 0
-        fold_accuracies: list[float] = []
-
-        for fold_num, fold_size in enumerate(fold_sizes, 1):
-            start, stop = current, current + fold_size
-            val_idx = indices[start:stop]
-            train_idx = np.concatenate([indices[:start], indices[stop:]])
-            current = stop
-
-            X_train, y_train = X_arr[train_idx].tolist(), y_arr[train_idx]
-            X_val, y_val = X_arr[val_idx].tolist(), y_arr[val_idx]
-
-            print(f"\n{'='*80}\nFOLD {fold_num}/5 | Train: {len(X_train)}, Val: {len(X_val)}\n{'='*80}\n")
-
-            model = model_class()
-            best_acc = self.train_cnn(
-                model=model,
-                X_train=X_train, y_train=y_train,
-                X_val=X_val, y_val=y_val,
-                fold_num=fold_num,
-            )
-            fold_accuracies.append(best_acc)
-            print(f"\nFold {fold_num} Best Accuracy: {best_acc:.4f}\n")
-
-        mean_acc = float(np.mean(fold_accuracies))
-        std_acc = float(np.std(fold_accuracies))
-
-        print(f"\n{'='*80}\nFINAL 5-FOLD CV RESULTS\nFold Accuracies: {fold_accuracies}\nMean: {mean_acc:.4f} ± {std_acc:.4f}\n{'='*80}\n")
-
-        results_path = os.path.join(self.config.checkpoint_dir, "5fold_cv_results.json")
-        os.makedirs(self.config.checkpoint_dir, exist_ok=True)
-        with open(results_path, 'w') as f:
-            json.dump({'fold_accuracies': fold_accuracies, 'mean_accuracy': mean_acc, 'std_accuracy': std_acc}, f, indent=2)
-
-        return fold_accuracies, mean_acc
 
     def _predict_val(self, model: torch.nn.Module, spec: np.ndarray, device: str) -> int:
         from src.config.config import DatasetConfig

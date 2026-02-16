@@ -63,6 +63,7 @@ class TrainConfig:
     device = "cuda"
     use_all_patches: bool = True
     samples_per_epoch_fraction: float = 1/8
-    checkpoint_dir: str = "models/checkpoints"
+    checkpoint_dir_cnn: str = "models/cnn/checkpoints"
+    checkpoint_dir_transformer: str = "models/transformer/checkpoints"
     save_every_n_epoch: int = 1
     resume_from: Optional[str] = None

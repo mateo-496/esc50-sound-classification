@@ -52,38 +52,24 @@ def main() -> None:
     train_parser.add_argument('--output-dir', type=str, help='Path to save preprocessed data')
     train_parser.add_argument('--X-path', type=str, help='Path to preprocessed X.npy')
     train_parser.add_argument('--y-path', type=str, help='Path to preprocessed y.npy')
-    train_parser.add_argument('--epochs', type=int, default=100, help='Number of epochs (default: 100)')
-    train_parser.add_argument('--batch-size', type=int, default=100, help='Batch size (default: 100)')
-    train_parser.add_argument('--lr', type=float, default=0.001, help='Learning rate (default: 0.01)')
-    train_parser.add_argument('--sample-fraction', type=float, default=1/8, help='Fraction of samples per epoch (default: 1/8)')
-    train_parser.add_argument('--checkpoint-dir', type=str, default='models/checkpoints', help='Checkpoint directory')
-    train_parser.add_argument('--save-every', type=int, default=1, help='Save checkpoint every N epochs')
-    train_parser.set_defaults(func=cmd_train)
-
-    train_parser = subparsers.add_parser('train_cv', help='Train model with k_fold CV')
-    train_parser.add_argument('--audio-dir', type=str, help='Path to training audio directory')
-    train_parser.add_argument('--output-dir', type=str, help='Path to save preprocessed data')
-    train_parser.add_argument('--X-path', type=str, help='Path to preprocessed X.npy')
-    train_parser.add_argument('--y-path', type=str, help='Path to preprocessed y.npy')
-    train_parser.add_argument('--epochs', type=int, default=100, help='Number of epochs (default: 100)')
-    train_parser.add_argument('--batch-size', type=int, default=100, help='Batch size (default: 100)')
-    train_parser.add_argument('--lr', type=float, default=0.001, help='Learning rate (default: 0.01)')
-    train_parser.add_argument('--k_fold', type=int, default=5, help='Number of folds for Cross-Validation (default: 5)')
-    train_parser.add_argument('--sample-fraction', type=float, default=1/8, help='Fraction of samples per epoch (default: 1/8)')
-    train_parser.add_argument('--checkpoint-dir', type=str, default='models/checkpoints', help='Checkpoint directory')
-    train_parser.add_argument('--save-every', type=int, default=1, help='Save checkpoint every N epochs')
-    train_parser.set_defaults(func=cmd_train_cv)
+    train_parser.add_argument('--epochs', type=int, help='Number of epochs (default: 100)')
+    train_parser.add_argument('--batch-size', type=int, help='Batch size (default: 100)')
+    train_parser.add_argument('--lr', type=float, help='Learning rate (default: 0.01)')
+    train_parser.add_argument('--sample-fraction', type=float, help='Fraction of samples per epoch (default: 1/8)')
+    train_parser.add_argument('--checkpoint-dir', type=str, help='Checkpoint directory')
+    train_parser.add_argument('--save-every', type=int, help='Save checkpoint every N epochs')
+    train_parser.set_defaults(func=cmd_train_cnn)
 
     resume_parser = subparsers.add_parser('resume', help='Resume training from checkpoint')
     resume_parser.add_argument('--resume-from', type=str, required=True, help='Path to checkpoint file')
     resume_parser.add_argument('--X-path', type=str, default="data/preprocessed/X.npy")
     resume_parser.add_argument('--y-path', type=str, default="data/preprocessed/y.npy")
-    resume_parser.add_argument('--epochs', type=int, default=100, help='Number of epochs (default: 100)')
-    resume_parser.add_argument('--batch-size', type=int, default=100, help='Batch size (default: 100)')
-    resume_parser.add_argument('--lr', type=float, default=0.01, help='Learning rate (default: 0.01)')
-    resume_parser.add_argument('--sample-fraction', type=float, default=1/8, help='Fraction of samples per epoch')
-    resume_parser.add_argument('--checkpoint-dir', type=str, default='models/checkpoints', help='Checkpoint directory')
-    resume_parser.add_argument('--save-every', type=int, default=1, help='Save checkpoint every N epochs')
+    resume_parser.add_argument('--epochs', type=int, help='Number of epochs (default: 100)')
+    resume_parser.add_argument('--batch-size', type=int, help='Batch size (default: 100)')
+    resume_parser.add_argument('--lr', type=float, help='Learning rate (default: 0.01)')
+    resume_parser.add_argument('--sample-fraction', type=float, help='Fraction of samples per epoch')
+    resume_parser.add_argument('--checkpoint-dir', type=str, help='Checkpoint directory')
+    resume_parser.add_argument('--save-every', type=int, help='Save checkpoint every N epochs')
     resume_parser.set_defaults(func=cmd_resume)
 
     predict_parser = subparsers.add_parser('predict', help='Predict audio file class')
@@ -123,7 +109,7 @@ def cmd_preprocess(args) -> None:
 
     print(f"Preprocessed data and saved to {args.output_dir}")
 
-def cmd_train(args) -> None: 
+def cmd_train_cnn(args) -> None: 
     X, y = _load_or_preprocess(args)
     trainer = CNNTrainer(TrainConfig(
         epochs=args.epochs,
@@ -136,19 +122,6 @@ def cmd_train(args) -> None:
     X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
     best_val_acc = trainer.train_cnn(CNN(n_classes=len(np.unique(y))), X_train, y_train, X_val, y_val, fold_num=0)
     print(f"\nTraining complete! Best validation accuracy: {best_val_acc:.4f}")
-
-def cmd_train_cv(args) -> None:
-    X, y = _load_or_preprocess(args)
-    trainer = CNNTrainer(TrainConfig(
-        epochs=args.epochs,
-        batch_size=args.batch_size,
-        lr=args.lr,
-        samples_per_epoch_fraction=args.sample_fraction,
-        checkpoint_dir=args.checkpoint_dir,
-        save_every_n_epoch=args.save_every,
-    ))
-    fold_accs, mean_acc = trainer.train_k_fold_cnn(CNN, X, y)
-    print(f"\nTraining complete! Mean validation accuracy: {mean_acc:.4f}")
 
 def cmd_predict(args) -> None:
     if not os.path.exists(args.audio_file):

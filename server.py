@@ -35,6 +35,10 @@ predictor = AudioPredictor("final_model.pt", device=device)
 async def root():
     return FileResponse("index.html")
 
+@app.get("/labels")
+def get_labels():
+    return {"labels": DatasetConfig().esc50_labels}
+
 @app.get("/api/status")
 async def status():
     return {
