@@ -468,7 +468,7 @@
             document.getElementById('predictedClass').textContent = 
                 data.predicted_class.replace(/_/g, ' ').toUpperCase();
             document.getElementById('confidence').textContent = 
-                `Confidence: ${(data.confidence * 100).toFixed(1)}%`;
+                `Confidence: ${(data.confidence * 100).toFixed(1)}% (Raw softmax output, not normalized)`;
 
             // Top predictions
             const topPredictionsDiv = document.getElementById('topPredictions');
