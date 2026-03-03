@@ -1,7 +1,47 @@
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict, Union
+
+@dataclass 
+class ScrappingTestConfig:
+    base_url: str = "https://sound-effects.bbcrewind.co.uk/search"
+    duration_ranges = ["10-30", "30-60", "60-120", "120-300", "300-600"]
+    params: Dict[str, Union[str, int, None]] = field(default_factory=lambda: {
+        "durations": "10-30",
+        "q": None,
+        "page": 2
+    })
+    
+    headers: Dict[str, str] = field(default_factory=lambda: {
+        "User-Agent": "Mozilla/5.0",
+        "Referer": "https://sound-effects.bbcrewind.co.uk/"
+    })
+    
+    labels: List[str] = field(default_factory=lambda: [
+        'dog', 'rooster', 'pig', 'cow', 'frog',
+        'cat', 'hen', 'insects', 'sheep', 'crow',
+        'rain', 'sea waves', 'crackling fire', 'crickets', 'chirping birds',
+        'water drops', 'wind', 'pouring water', 'toilet flush', 'thunderstorm',
+        'crying baby', 'sneezing', 'clapping', 'breathing', 'coughing',
+        'footsteps', 'laughing', 'brushing teeth', 'snoring', 'drinking sipping',
+        'door wood knock', 'mouse click', 'keyboard typing', 'door wood creaks', 'can opening',
+        'washing machine', 'vacuum cleaner', 'clock alarm', 'clock tick', 'glass breaking',
+        'helicopter', 'chainsaw', 'siren', 'car horn', 'engine',
+        'train', 'church bells', 'airplane', 'fireworks', 'hand saw'
+    ])
+    # labels: List[str] = field(default_factory=lambda: [
+    #     'crackling fire', 'chirping birds',
+    #     'water drops', 'pouring water', 'toilet flush',
+    #     'crying baby', 'brushing teeth','drinking sipping',
+    #     'door wood knock', 'mouse click', 'keyboard typing', 'door wood creaks', 'can opening',
+    #     'washing machine', 'vacuum cleaner', 'clock alarm', 'clock tick', 'glass breaking',
+    #     'car horn', 
+    #     'church bells','hand saw'
+    # ])
+    min_files_per_category: int = 10
+    max_retries: int = 3
+    cooldown_seconds: int = 60
 
 @dataclass
 class ProcessingConfig:
@@ -58,8 +98,10 @@ class DownloadConfig:
 @dataclass
 class TrainConfig:
     epochs: int = 50
+    warmup_epochs: int = 5
     batch_size: int = 100
-    lr: int = 0.001
+    lr: float = 0.001
+    weight_decay: float = 1e-4
     device = "cuda"
     use_all_patches: bool = True
     samples_per_epoch_fraction: float = 1/8

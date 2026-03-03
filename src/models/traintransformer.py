@@ -1,234 +1,196 @@
+import json
+import os
+import time
+import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torch.optim import Adam, AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR, OneCycleLR
-import os
-import numpy as np
-from tqdm import tqdm
-import time
+import tqdm
+from torch.optim import AdamW
+from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.utils.data import DataLoader
+from typing import Sequence
 
+from src.config.config import TrainConfig
+from src.data.dataset import FullTFPatchesDataset, RandomPatchDataset
+
+config = TrainConfig()
 
 class TransformerTrainer:
-    def __init__(
+    def __init__(self, config: TrainConfig = config) -> None:
+        self.config = config
+
+    def train(
         self,
-        model,
-        train_loader,
-        val_loader,
-        num_epochs=50,
-        learning_rate=1e-4,
-        weight_decay=1e-4,
-        warmup_epochs=5,
-        checkpoint_dir="models/transformer/checkpoints",
-        device="cuda"
-    ):
-        self.model = model.to(device)
-        self.train_loader = train_loader
-        self.val_loader = val_loader
-        self.num_epochs = num_epochs
-        self.device = device
-        self.checkpoint_dir = checkpoint_dir
+        model: nn.Module,
+        X_train: Sequence[np.ndarray],
+        y_train: Sequence[int],
+        X_val: Sequence[np.ndarray],
+        y_val: Sequence[int],
+    ) -> float:
+        device = self.config.device
+        os.makedirs(self.config.checkpoint_dir_transformer, exist_ok=True)
+        model.to(device)
 
-        os.makedirs(checkpoint_dir, exist_ok=True)
+        if self.config.use_all_patches:
+            train_dataset = FullTFPatchesDataset(X_train, y_train)
+            print(f"\n{'='*60}\nUsing ALL PATCHES method\n{'='*60}")
+        else:
+            train_dataset = RandomPatchDataset(X_train, y_train)
+            print(f"\n{'='*60}\nUsing RANDOM PATCHES method\n{'='*60}")
 
-        self.optimizer = AdamW(
-            model.parameters(),
-            lr=learning_rate,
-            weight_decay=weight_decay,
-            betas=(0.9, 0.999)
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=self.config.batch_size,
+            shuffle=True,
+            num_workers=4,
+            pin_memory=True
+        )
+        val_loader = DataLoader(
+            FullTFPatchesDataset(X_val, y_val),
+            batch_size=self.config.batch_size,
+            num_workers=4,
+            pin_memory=True
         )
 
-        self.scheduler = CosineAnnealingLR(
-            self.optimizer,
-            T_max = num_epochs - warmup_epochs,
+        total_patches = len(train_dataset)
+        patches_per_epoch = int(total_patches * self.config.samples_per_epoch_fraction)
+        batches_per_epoch = patches_per_epoch // self.config.batch_size
+        print(f"Total available patches: {total_patches:,}")
+        print(f"Patches per epoch ({self.config.samples_per_epoch_fraction}): {patches_per_epoch:,}")
+        print(f"Batches per epoch: {batches_per_epoch:,}\n{'='*60}\n")
+
+        criterion = nn.CrossEntropyLoss()
+        optimizer = AdamW(
+            model.parameters(),
+            lr=self.config.lr,
+            weight_decay=self.config.weight_decay,
+            betas=(0.9, 0.999)
+        )
+        scheduler = CosineAnnealingLR(
+            optimizer,
+            T_max=self.config.epochs - self.config.warmup_epochs,
             eta_min=1e-6
         )
 
-        self.warmup_epochs = warmup_epochs
-        self.base_lr = learning_rate
+        start_epoch = 0
+        best_val_acc = 0.0
+        best_epoch = 0
+        training_history: dict = {'train_loss': [], 'train_acc': [], 'val_acc': [], 'epochs': []}
 
-        self.criterion = nn.CrossEntropyLoss()
+        if self.config.resume_from and os.path.exists(self.config.resume_from):
+            print(f"Resuming from checkpoint: {self.config.resume_from}")
+            checkpoint = torch.load(self.config.resume_from, map_location=device)
+            model.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            start_epoch = checkpoint['epoch'] + 1
+            best_val_acc = checkpoint['best_val_acc']
+            training_history = checkpoint['history']
+            print(f"Resuming from epoch {checkpoint['epoch']}, best val acc: {best_val_acc:.4f}\n")
 
-        self.train_loss = []
-        self.val_loss = []
-        self.train_acc = []
-        self.val_acc = []
-        self.best_val_acc = 0
-        self.best_epoch = 0
-
-    def warmup_lr(self, epoch):
-        if epoch < self.warmup_epochs:
-            lr = self.base_lr * (epoch + 1) / self.warmup_epochs
-            for param_group in self.optimizer.param_groups:
-                param_group['lr'] = lr
-    
-    def train_epoch(self, epoch):
-        self.model.train()
-
-        total_loss = 0
-        correct = 0
-        total = 0
-
-        for batch_idx, (data, target) in enumerate(tqdm(self.train_loader, des=f"Epoch {epoch}/{self.num_epochs}")):
-            data, target = data.to(self.device), target.to(self.device)
-
-            self.optimizer.zero_grad()
-            output = self.model(data)
-            loss = self.criterion(output, target)
-
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-            self.optimizer.step()
-
-            pred = output.argmax(dim=1)
-            correct += pred.eq(target).sum().item()
-        
-            total_loss += loss.item()
-            total += target.size()
-
-            pbar.set_postfix({
-                'loss': total_loss / (batch_idx + 1),
-                'acc': 100. * correct / total,
-                'lr': self.optimizer.param_groups[0]['lr']
-            })
-
-        avg_loss = total_loss / len(self.train_loader)
-        avg_acc = 100. * correct / total
-
-        return avg_loss, avg_acc
-        
-    def validate(self):
-        self.model.eval()
-        
-        total_loss = 0
-        correct = 0
-        total = 0
-        
-        with torch.no_grad():
-            for data, target in tqdm(self.val_loader, desc='Validation'):
-                data, target = data.to(self.device), target.to(self.device)
-                
-                output = self.model(data)
-                loss = self.criterion(output, target)
-                
-                total_loss += loss.item()
-                pred = output.argmax(dim=1)
-                correct += pred.eq(target).sum().item()
-                total += target.size(0)
-        
-        avg_loss = total_loss / len(self.val_loader)
-        avg_acc = 100. * correct / total
-        
-        return avg_loss, avg_acc
-    
-    def save_checkpoint(self, epoch, val_acc, is_best=False):
-        """Save model checkpoint."""
-        checkpoint = {
-            'epoch': epoch,
-            'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'scheduler_state_dict': self.scheduler.state_dict(),
-            'val_acc': val_acc,
-            'train_losses': self.train_losses,
-            'val_losses': self.val_losses,
-            'train_accs': self.train_accs,
-            'val_accs': self.val_accs,
-        }
-        
-        # Save latest checkpoint
-        path = os.path.join(self.checkpoint_dir, 'checkpoint_latest.pth')
-        torch.save(checkpoint, path)
-        
-        # Save best checkpoint
-        if is_best:
-            path = os.path.join(self.checkpoint_dir, 'checkpoint_best.pth')
-            torch.save(checkpoint, path)
-            print(f'✓ Saved best model with val_acc: {val_acc:.2f}%')
-    
-    def load_checkpoint(self, checkpoint_path):
-        """Load model checkpoint."""
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
-        
-        self.model.load_state_dict(checkpoint['model_state_dict'])
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-        
-        self.train_losses = checkpoint['train_losses']
-        self.val_losses = checkpoint['val_losses']
-        self.train_accs = checkpoint['train_accs']
-        self.val_accs = checkpoint['val_accs']
-        
-        print(f'✓ Loaded checkpoint from epoch {checkpoint["epoch"]}')
-        return checkpoint['epoch']
-    
-    def train(self, resume_from=None):
-        """
-        Main training loop.
-        
-        Args:
-            resume_from: Path to checkpoint to resume from
-        
-        Returns:
-            Best validation accuracy
-        """
-        start_epoch = 1
-        
-        if resume_from:
-            start_epoch = self.load_checkpoint(resume_from) + 1
-        
-        print(f'\nStarting training for {self.num_epochs} epochs')
-        print(f'Device: {self.device}')
-        print(f'Training samples: {len(self.train_loader.dataset)}')
-        print(f'Validation samples: {len(self.val_loader.dataset)}')
-        print('-' * 60)
-        
         start_time = time.time()
-        
-        for epoch in range(start_epoch, self.num_epochs + 1):
-            # Warmup learning rate
-            if epoch <= self.warmup_epochs:
-                self._warmup_lr(epoch - 1)
-            
-            # Train
-            train_loss, train_acc = self.train_epoch(epoch)
-            
-            # Validate
-            val_loss, val_acc = self.validate()
-            
-            # Update scheduler (after warmup)
-            if epoch > self.warmup_epochs:
-                self.scheduler.step()
-            
-            # Track metrics
-            self.train_losses.append(train_loss)
-            self.val_losses.append(val_loss)
-            self.train_accs.append(train_acc)
-            self.val_accs.append(val_acc)
-            
-            # Print epoch summary
-            print(f'\nEpoch {epoch}/{self.num_epochs}:')
-            print(f'  Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%')
-            print(f'  Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%')
-            print(f'  LR: {self.optimizer.param_groups[0]["lr"]:.6f}')
-            
-            # Save checkpoint
-            is_best = val_acc > self.best_val_acc
+
+        for epoch in range(start_epoch, self.config.epochs):
+            if epoch < self.config.warmup_epochs:
+                lr = self.config.lr * (epoch + 1) / self.config.warmup_epochs
+                for pg in optimizer.param_groups:
+                    pg['lr'] = lr
+
+            model.train()
+            train_loss, correct, total, batches_processed = 0.0, 0, 0, 0
+
+            for xb, yb in tqdm.tqdm(train_loader, desc=f"Epoch {epoch+1} Train", leave=False):
+                if batches_processed >= batches_per_epoch:
+                    break
+                xb, yb = xb.to(device), yb.to(device)
+                optimizer.zero_grad()
+                out = model(xb)
+                loss = criterion(out, yb)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optimizer.step()
+
+                train_loss += loss.item() * xb.size(0)
+                correct += out.argmax(dim=1).eq(yb).sum().item()
+                total += yb.size(0)
+                batches_processed += 1
+
+            train_loss /= total
+            train_acc = correct / total
+
+            if epoch >= self.config.warmup_epochs:
+                scheduler.step()
+
+            val_acc = self._validate(model, X_val, y_val, device, epoch)
+
+            is_best = val_acc > best_val_acc
             if is_best:
-                self.best_val_acc = val_acc
-                self.best_epoch = epoch
-            
-            self.save_checkpoint(epoch, val_acc, is_best)
-            
-            # Early stopping check (optional)
-            if epoch - self.best_epoch > 30:
+                best_val_acc = val_acc
+                best_epoch = epoch
+
+            training_history['train_loss'].append(train_loss)
+            training_history['train_acc'].append(train_acc)
+            training_history['val_acc'].append(val_acc)
+            training_history['epochs'].append(epoch + 1)
+
+            print(
+                f"Epoch {epoch+1}/{self.config.epochs} | "
+                f"Train loss: {train_loss:.4f}, Train acc: {train_acc:.4f} | "
+                f"Val acc: {val_acc:.4f} (best: {best_val_acc:.4f}) | "
+                f"LR: {optimizer.param_groups[0]['lr']:.6f}"
+            )
+
+            if (epoch + 1) % self.config.save_every_n_epoch == 0 or is_best:
+                checkpoint = {
+                    'epoch': epoch,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'scheduler_state_dict': scheduler.state_dict(),
+                    'best_val_acc': best_val_acc,
+                    'history': training_history,
+                }
+                torch.save(checkpoint, os.path.join(self.config.checkpoint_dir_transformer, 'latest_checkpoint.pt'))
+                if is_best:
+                    torch.save(checkpoint, os.path.join(self.config.checkpoint_dir_transformer, 'best_model.pt'))
+                    print(f'✓ Saved best model with val_acc: {val_acc:.4f}')
+
+                with open(os.path.join(self.config.checkpoint_dir_transformer, 'training_history.json'), 'w') as f:
+                    json.dump(training_history, f, indent=2)
+
+            if epoch - best_epoch > 30:
                 print(f'\nEarly stopping: no improvement for 30 epochs')
                 break
-        
-        elapsed_time = time.time() - start_time
-        print(f'\n{"="*60}')
-        print(f'Training completed in {elapsed_time/3600:.2f} hours')
-        print(f'Best validation accuracy: {self.best_val_acc:.2f}% at epoch {self.best_epoch}')
-        print(f'{"="*60}')
-        
-        return self.best_val_acc
 
+        elapsed = time.time() - start_time
+        print(f'\n{"="*60}')
+        print(f'Training completed in {elapsed/3600:.2f} hours')
+        print(f'Best validation accuracy: {best_val_acc:.4f} at epoch {best_epoch+1}')
+        print(f'{"="*60}')
+
+        final_dir = "models/saved"
+        os.makedirs(final_dir, exist_ok=True)
+        torch.save({'model_state_dict': model.state_dict(), 'best_val_acc': best_val_acc}, 
+                   os.path.join(final_dir, "final_transformer.pt"))
+
+        return best_val_acc
+
+    def _validate(self, model: nn.Module, X_val: Sequence[np.ndarray], y_val: Sequence[int], device: str, epoch: int) -> float:
+        from src.config.config import DatasetConfig
+        cfg = DatasetConfig()
+        model.eval()
+        correct = 0
+        for i in tqdm.tqdm(range(len(y_val)), desc=f"Epoch {epoch+1} Val", leave=False):
+            spec = X_val[i]
+            n_frames = spec.shape[0]
+            if n_frames < cfg.cnn_input_length:
+                spec = np.pad(spec, ((0, cfg.cnn_input_length - n_frames), (0, 0)), mode='constant')
+                n_frames = cfg.cnn_input_length
+            patches = np.stack([
+                spec[s:s + cfg.cnn_input_length]
+                for s in range(0, n_frames - cfg.cnn_input_length + 1)
+            ])[:, np.newaxis]
+            with torch.no_grad():
+                out = model(torch.tensor(patches, dtype=torch.float32).to(device)).mean(dim=0)
+            if out.argmax().item() == y_val[i]:
+                correct += 1
+        return correct / len(y_val)

@@ -2,8 +2,6 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-
-
 class PatchEmbed(nn.Module):
     def __init__(
         self, 
@@ -34,17 +32,14 @@ class MultiHeadAttention(nn.Module):
     def __init__(
         self, 
         dim, 
-        num_heads=12,
+        n_heads=12,
         qkv_bias=True,
         attn_drop=0.0,
         proj_drop=0.0
         ):
         super().__init__()
-        self.num_heads = num_heads
-        print("num_heads:", dim, type(num_heads))
-        print("dim:", dim, type(dim))
-        self.head_dim = dim // num_heads
-        print("head_dim:", self.head_dim, type(self.head_dim))
+        self.n_heads = n_heads
+        self.head_dim = dim // n_heads
         self.scale = self.head_dim ** -0.5
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
@@ -55,7 +50,7 @@ class MultiHeadAttention(nn.Module):
     def forward(self, x):
         B, N, D = x.shape
 
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim)
+        qkv = self.qkv(x).reshape(B, N, 3, self.n_heads, self.head_dim)
         qkv = qkv.permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
 
@@ -100,7 +95,7 @@ class TransformerBlock(nn.Module):
     def __init__(
         self,
         dim,
-        num_heads,
+        n_heads,
         mlp_ratio=4.0,
         qkv_bias=True,
         drop=0.0,
@@ -110,7 +105,7 @@ class TransformerBlock(nn.Module):
         self.norm1 = nn.LayerNorm(dim)
         self.attn = MultiHeadAttention(
             dim=dim, 
-            num_heads=num_heads,
+            n_heads=n_heads,
             qkv_bias=qkv_bias,
             attn_drop=attn_drop,
             proj_drop=drop
@@ -130,18 +125,18 @@ class TransformerBlock(nn.Module):
 
         return x
 
-class AudioSpectrogramTransformer(nn.Module):
+class AST(nn.Module):
     def __init__(
         self,
-        num_classes=50,
+        n_classes=50,
         input_fdim=128,
-        input_tdim=500,
+        input_tdim=128,
         patch_size=16,
         stride=10,
         in_chans=1,
         embed_dim=768,
         depth=12,
-        num_heads=12,
+        n_heads=12,
         mlp_ratio=4,
         qkv_bias=True,
         drop_rate=0,
@@ -149,7 +144,7 @@ class AudioSpectrogramTransformer(nn.Module):
     ):
         super().__init__()
 
-        self.num_classes = num_classes
+        self.n_classes = n_classes
         self.embed_dim = embed_dim
         self.patch_embed = PatchEmbed(
             patch_size=patch_size,
@@ -157,15 +152,15 @@ class AudioSpectrogramTransformer(nn.Module):
             in_chans=in_chans,
             embed_dim=embed_dim
         )
-        self.num_patches = self._calculate_num_patches(input_fdim, input_tdim, patch_size, stride)
+        self.n_patches = self._calculate_n_patches(input_fdim, input_tdim, patch_size, stride)
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
-        self.pos_embed = nn.Parameter(torch.zeros(1, self.num_patches + 1, embed_dim))
+        self.pos_embed = nn.Parameter(torch.zeros(1, self.n_patches + 1, embed_dim))
         self.pos_drop = nn.Dropout(p=drop_rate)
 
         self.blocks = nn.ModuleList([
             TransformerBlock(
                 dim=embed_dim,
-                num_heads=num_heads,
+                n_heads=n_heads,
                 mlp_ratio=mlp_ratio,
                 qkv_bias=qkv_bias,
                 drop=drop_rate,
@@ -175,11 +170,11 @@ class AudioSpectrogramTransformer(nn.Module):
         ])
         
         self.norm = nn.LayerNorm(embed_dim)
-        self.head = nn.Linear(embed_dim, num_classes)
+        self.head = nn.Linear(embed_dim, n_classes)
 
         self._init_weights()
 
-    def _calculate_num_patches(self, fdim, tdim, patch_size, stride):
+    def _calculate_n_patches(self, fdim, tdim, patch_size, stride):
         f_patches = (fdim - patch_size) // stride + 1
         t_patches = (tdim - patch_size) // stride + 1
         return f_patches * t_patches
@@ -253,7 +248,7 @@ class AudioSpectrogramTransformer(nn.Module):
                 
         x_norm = target_block.norm1(x)
         B, N, D = x_norm.shape
-        qkv = target_block.attn.qkv(x_norm).reshape(B, N, 3, target_block.attn.num_heads, target_block.attn.head_dim)
+        qkv = target_block.attn.qkv(x_norm).reshape(B, N, 3, target_block.attn.n_heads, target_block.attn.head_dim)
         qkv = qkv.permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
         
@@ -261,86 +256,3 @@ class AudioSpectrogramTransformer(nn.Module):
         attn = attn.softmax(dim=-1)
         
         return attn
-
-def create_ast_model(
-    num_classes=50,
-    model_size='base',
-    input_fdim=128,
-    input_tdim=500
-):
-    """
-    Create AST model with preset configurations.
-    
-    Args:
-        num_classes: Number of output classes
-        model_size: 'tiny', 'small', 'base', or 'large'
-        input_fdim: Frequency dimension
-        input_tdim: Time dimension
-    
-    Returns:
-        AST model
-    """
-    configs = {
-        'tiny': {
-            'embed_dim': 192,
-            'depth': 12,
-            'num_heads': 3,
-        },
-        'small': {
-            'embed_dim': 384,
-            'depth': 12,
-            'num_heads': 6,
-        },
-        'base': {
-            'embed_dim': 768,
-            'depth': 12,
-            'num_heads': 12,
-        },
-        'large': {
-            'embed_dim': 1024,
-            'depth': 24,
-            'num_heads': 16,
-        }
-    }
-    
-    if model_size not in configs:
-        raise ValueError(f"Model size must be one of {list(configs.keys())}")
-    
-    config = configs[model_size]
-    
-    model = AudioSpectrogramTransformer(
-        num_classes=num_classes,
-        input_fdim=input_fdim,
-        input_tdim=input_tdim,
-        embed_dim=config['embed_dim'],
-        depth=config['depth'],
-        num_heads=config['num_heads'],
-        patch_size=16,
-        stride=10,
-        mlp_ratio=4.0,
-        drop_rate=0.0,
-        attn_drop_rate=0.0
-    )
-    
-    return model
-
-
-if __name__ == '__main__':
-    # Test the model
-    print("Testing AST model...")
-    
-    # Create model
-    model = create_ast_model(num_classes=50, model_size='base')
-    print(f"Model created with {sum(p.numel() for p in model.parameters()):,} parameters")
-    
-    # Test forward pass
-    batch_size = 4
-    test_input = torch.randn(batch_size, 500, 128)  # [B, T, F]
-    
-    model.eval()
-    with torch.no_grad():
-        output = model(test_input)
-    
-    print(f"Input shape: {test_input.shape}")
-    print(f"Output shape: {output.shape}")
-    print("✓ Model works correctly!")
